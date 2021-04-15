@@ -16,6 +16,16 @@ if !exists('g:gotoansibleresource_extra_collection_path')
   let g:gotoansibleresource_extra_collection_path = []
 endif
 
+" Do we want to enable a simple helper
+" that allows user to select a whole line
+" line '    name: 'ccin2p3.idm.ikaas''
+" and extract automatically the role name
+" 'ccin2p3.idm.ikaas' from this kind of line
+if !exists('g:gotoansibleresource_name_key_strip_in_role')
+  let g:gotoansibleresource_name_key_strip_in_role = 1
+endif
+
+
 " Initialize this to empty array, this will make this easy for
 " us to later only call out the 'ansible-config' command
 " once (if this variable is empty array)
@@ -24,6 +34,19 @@ let g:gotoansibleresource_discovered_collection_path = []
 "
 " Helpers
 "
+"
+" Borrowed from https://groups.google.com/g/vim_use/c/ZaPC6p947_M/m/3gB-HdCKmd8J
+function! s:getVisuallySelectedText() range
+  let reg_save = getreg('"')
+  let regtype_save = getregtype('"')
+  let cb_save = &clipboard
+  set clipboard&
+  normal! ""gvy
+  let selection = getreg('"')
+  call setreg('"', reg_save, regtype_save)
+  let &clipboard = cb_save
+  return selection
+endfunction
 function! s:getResourceNameUnderCursor()
   " Get current WORD under cursor and remove any final ':' char
   let wordUnderCursor = substitute(expand('<cWORD>'), ':$', '', '')
@@ -90,7 +113,7 @@ function! s:searchCollectionResource(rType, components, searchPaths)
   return ""
 endfunc
 
-function! s:searchPluginInCollection(rType, pluginsPath, resource)
+function! s:searchPluginInCollection(rType, pluginsPath, resource) abort
   let pluginKind = a:rType[:stridx(a:rType, '_')-1]
   let resourcePath = ""
 
@@ -157,15 +180,15 @@ function! s:searchRoleInCollection(rName, colPath)
   return l:rolePath
 endfunc
 
-"
-" Public function
-"
-function! gotoansibleresource#gotoAnsibleResource(rType)
+function! s:processWordUnderCursor(rType) abort
   let cResourceName = s:getResourceNameUnderCursor()
+  return s:processGivenResourceName(a:rType, l:cResourceName)
+endfunc
 
-  if s:doesResourceNameLooksLikeFullyQualifiedName(l:cResourceName) == 1
+function! s:processGivenResourceName(rType, cResourceName) abort
+  if s:doesResourceNameLooksLikeFullyQualifiedName(a:cResourceName) == 1
     let colSearchPaths = s:getCollectionSearchPaths()
-    let colComponents = s:collectionExtractComponents(l:cResourceName)
+    let colComponents = s:collectionExtractComponents(a:cResourceName)
 
     let resourcePath = s:searchCollectionResource(a:rType, l:colComponents, l:colSearchPaths)
     if l:resourcePath == ""
@@ -180,9 +203,54 @@ function! gotoansibleresource#gotoAnsibleResource(rType)
     execute "vsplit | view ".l:resourcePath
     return
   endif
+
 endfunc
 
-command! GotoAnsibleRole call gotoansibleresource#gotoAnsibleResource('role')
-command! GotoAnsiblePlugin call gotoansibleresource#gotoAnsibleResource('tryall_plugin')
-command! GotoAnsibleActionPlugin call gotoansibleresource#gotoAnsibleResource('action_plugin')
-command! GotoAnsibleModulePlugin call gotoansibleresource#gotoAnsibleResource('module_plugin')
+function! s:processSingleLine(lineno, rType) abort
+  " get visually selected text and continue like
+  " if we were called with the word under cursor
+  let selectedText = trim(s:getVisuallySelectedText())
+
+  if g:gotoansibleresource_name_key_strip_in_role == 1 && a:rType == 'role'
+    let selectedText = s:removeYamlKeyFromRoleNameLine(l:selectedText)
+  endif
+
+  return s:processGivenResourceName(a:rType, s:cleanupSelectedText(l:selectedText))
+endfunc
+
+function! s:cleanupSelectedText(text)
+  " in YAML, dict ends with a ':' that can be mistakenly selected
+  let cleaned = substitute(a:text, ':$', '', '')
+  let cleaned = substitute(l:cleaned, "^\['\"\]", '', 'g')
+  let cleaned = substitute(l:cleaned, "\['\"\]$", '', 'g')
+  return l:cleaned
+endfunc
+
+function! s:removeYamlKeyFromRoleNameLine(line)
+  let fields = split(a:line, ':')
+  return trim(l:fields[1])
+endfunc
+
+function! s:processMultipleLines(line1, line2, rType) abort
+endfunc
+
+"
+" Public function
+"
+function! gotoansibleresource#gotoAnsibleResource(linesInRange, line1, line2, rType) abort
+  " no range given
+  if a:linesInRange == 0
+    return s:processWordUnderCursor(a:rType)
+
+  elseif a:linesInRange == 1 || a:line1 == a:line2
+    return s:processSingleLine(a:line1, a:rType)
+
+  else
+    return s:processMultipleLines(a:line1, a:line2, a:rType)
+  endif
+endfunc
+
+command! -range GotoAnsibleRole call gotoansibleresource#gotoAnsibleResource(<range>, <line1>, <line2>, 'role')
+command! -range GotoAnsiblePlugin call gotoansibleresource#gotoAnsibleResource(<range>, <line1>, <line2>, 'tryall_plugin')
+command! -range GotoAnsibleActionPlugin call gotoansibleresource#gotoAnsibleResource(<range>, <line1>, <line2>, 'action_plugin')
+command! -range GotoAnsibleModulePlugin call gotoansibleresource#gotoAnsibleResource(<range>, <line1>, <line2>, 'module_plugin')
